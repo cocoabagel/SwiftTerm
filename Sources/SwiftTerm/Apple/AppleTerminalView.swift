@@ -527,7 +527,16 @@ extension TerminalView {
         
         while col < cols {
             let ch: CharData = line[col]
-            let width = max(1, Int(ch.width))
+            let cellWidth = Int(ch.width)
+
+            // Skip placeholder cells for double-width characters (CJK)
+            // These cells have width=0 and follow a width=2 character
+            if cellWidth == 0 {
+                col += 1
+                continue
+            }
+
+            let width = cellWidth
             let attr = ch.attribute
             let hasUrl = ch.hasPayload
             guard let attributes = getAttributes(attr, withUrl: hasUrl) else {

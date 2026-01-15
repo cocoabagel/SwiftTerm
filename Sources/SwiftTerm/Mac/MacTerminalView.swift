@@ -109,6 +109,12 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     var trueColors: [Attribute.Color:NSColor] = [:]
     var transparent = TTColor.transparent ()
     var isBigSur = true
+
+    // IME (Input Method Editor) support for Japanese/Chinese/Korean input
+    var textInputStorage: String = ""
+    var _markedTextRange: NSRange?
+    var _selectedTextRange: NSRange = NSRange(location: 0, length: 0)
+    private var previousMarkedTextLength: Int = 0
     
     /// This flag is automatically set to true after the initializer is called, if running on a system older than BigSur.
     /// Starting with BigSur any screen updates will invoke the draw() method with the whole region, regardless
@@ -728,9 +734,22 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     
     // NSTextInputClient protocol implementation
     open func insertText(_ string: Any, replacementRange: NSRange) {
+        // If we have marked text, delete it first then insert the final text
+        if previousMarkedTextLength > 0 {
+            let backspaces = [UInt8](repeating: 0x7f, count: previousMarkedTextLength)
+            send(backspaces)
+            previousMarkedTextLength = 0
+        }
+
+        // Reset IME state
+        textInputStorage = ""
+        _markedTextRange = nil
+        _selectedTextRange = NSRange(location: 0, length: 0)
+
+        // Send the final confirmed text
         insertText(string, replacementRange: replacementRange, isPaste: false)
     }
-    
+
     func insertText(_ string: Any, replacementRange: NSRange, isPaste: Bool) {
         if let str = string as? NSString {
             if isPaste, terminal.bracketedPasteMode {
@@ -747,12 +766,50 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     
     // NSTextInputClient protocol implementation
     open func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
-        // nothing
+        let newText: String
+        if let str = string as? String {
+            newText = str
+        } else if let attrStr = string as? NSAttributedString {
+            newText = attrStr.string
+        } else {
+            return
+        }
+
+        // Delete previous marked text by sending backspaces
+        if previousMarkedTextLength > 0 {
+            let backspaces = [UInt8](repeating: 0x7f, count: previousMarkedTextLength)
+            send(backspaces)
+        }
+
+        // Send new marked text directly to terminal
+        if !newText.isEmpty {
+            send(txt: newText)
+        }
+
+        // Update state
+        textInputStorage = newText
+        previousMarkedTextLength = newText.count
+
+        if !newText.isEmpty {
+            _markedTextRange = NSRange(location: 0, length: newText.count)
+            _selectedTextRange = NSRange(
+                location: selectedRange.location,
+                length: selectedRange.length
+            )
+        } else {
+            _markedTextRange = nil
+            _selectedTextRange = NSRange(location: 0, length: 0)
+        }
     }
     
     // NSTextInputClient protocol implementation
     open func unmarkText() {
-        // nothing
+        // Text is already displayed in terminal, just reset state
+        // Don't send anything - the marked text is already visible
+        textInputStorage = ""
+        previousMarkedTextLength = 0
+        _markedTextRange = nil
+        _selectedTextRange = NSRange(location: 0, length: 0)
     }
     
     // NSTextInputClient protocol implementation
@@ -777,17 +834,12 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     
     // NSTextInputClient protocol implementation
     open func markedRange() -> NSRange {
-        print ("markedRange: This should return the actual range from the selection")
-        
-        // This means "no marked" - when we fix, we should address
-        return NSRange.empty
+        return _markedTextRange ?? NSRange.empty
     }
-    
+
     // NSTextInputClient protocol implementation
     open func hasMarkedText() -> Bool {
-        // print ("hasMarkedText: This should return the actual range from the selection")
-        // TODO
-        return false
+        return _markedTextRange != nil && _markedTextRange!.length > 0
     }
     
     // NSTextInputClient protocol implementation
@@ -805,12 +857,18 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     // NSTextInputClient protocol implementation
     open func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
         actualRange?.pointee = range
-        
-        if let r = window?.convertToScreen(convert(caretView!.frame, to: nil)) {
-            return r
+
+        guard let caretView = caretView,
+              let window = window else {
+            return .zero
         }
-        
-        return .zero
+
+        // Convert caret position to screen coordinates for IME candidate window
+        let caretFrameInView = caretView.frame
+        let caretFrameInWindow = convert(caretFrameInView, to: nil)
+        let caretFrameInScreen = window.convertToScreen(caretFrameInWindow)
+
+        return caretFrameInScreen
     }
     
     // NSTextInputClient protocol implementation
@@ -1331,6 +1389,15 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     
     public func iTermContent (source: Terminal, content: ArraySlice<UInt8>) {
         terminalDelegate?.iTermContent(source: self, content: content)
+    }
+
+    // MARK: - IME Support
+
+    func resetInputBuffer() {
+        textInputStorage = ""
+        previousMarkedTextLength = 0
+        _markedTextRange = nil
+        _selectedTextRange = NSRange(location: 0, length: 0)
     }
 }
 
