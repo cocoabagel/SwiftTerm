@@ -114,8 +114,8 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     var textInputStorage: String = ""
     var _markedTextRange: NSRange?
     var _selectedTextRange: NSRange = NSRange(location: 0, length: 0)
-    private var previousMarkedTextLength: Int = 0
-    
+    private var markedTextOverlay: NSTextField?
+
     /// This flag is automatically set to true after the initializer is called, if running on a system older than BigSur.
     /// Starting with BigSur any screen updates will invoke the draw() method with the whole region, regardless
     /// of how much changed.   Setting this to true, will disable this OS behavior, setting it to false, will keep
@@ -734,12 +734,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     
     // NSTextInputClient protocol implementation
     open func insertText(_ string: Any, replacementRange: NSRange) {
-        // If we have marked text, delete it first then insert the final text
-        if previousMarkedTextLength > 0 {
-            let backspaces = [UInt8](repeating: 0x7f, count: previousMarkedTextLength)
-            send(backspaces)
-            previousMarkedTextLength = 0
-        }
+        hideMarkedTextOverlay()
 
         // Reset IME state
         textInputStorage = ""
@@ -775,20 +770,8 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             return
         }
 
-        // Delete previous marked text by sending backspaces
-        if previousMarkedTextLength > 0 {
-            let backspaces = [UInt8](repeating: 0x7f, count: previousMarkedTextLength)
-            send(backspaces)
-        }
-
-        // Send new marked text directly to terminal
-        if !newText.isEmpty {
-            send(txt: newText)
-        }
-
-        // Update state
+        // Store the marked text
         textInputStorage = newText
-        previousMarkedTextLength = newText.count
 
         if !newText.isEmpty {
             _markedTextRange = NSRange(location: 0, length: newText.count)
@@ -800,14 +783,21 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             _markedTextRange = nil
             _selectedTextRange = NSRange(location: 0, length: 0)
         }
+
+        // Show text in overlay
+        updateMarkedTextOverlay()
     }
     
     // NSTextInputClient protocol implementation
     open func unmarkText() {
-        // Text is already displayed in terminal, just reset state
-        // Don't send anything - the marked text is already visible
+        // Send text to terminal
+        if !textInputStorage.isEmpty {
+            send(txt: textInputStorage)
+        }
+        hideMarkedTextOverlay()
+
+        // Reset state
         textInputStorage = ""
-        previousMarkedTextLength = 0
         _markedTextRange = nil
         _selectedTextRange = NSRange(location: 0, length: 0)
     }
@@ -1393,9 +1383,73 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
 
     // MARK: - IME Support
 
+    private func updateMarkedTextOverlay() {
+        let markedText = textInputStorage
+
+        if markedText.isEmpty {
+            hideMarkedTextOverlay()
+            return
+        }
+
+        if markedTextOverlay == nil {
+            let overlay = NSTextField(frame: .zero)
+            overlay.isBezeled = false
+            overlay.isEditable = false
+            overlay.drawsBackground = true
+            overlay.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.95)
+            overlay.textColor = NSColor.textColor
+            overlay.font = fontSet.normal
+            overlay.wantsLayer = true
+            overlay.layer?.cornerRadius = 2
+            overlay.layer?.borderWidth = 1
+            overlay.layer?.borderColor = NSColor.separatorColor.cgColor
+            overlay.layer?.zPosition = 1000
+            markedTextOverlay = overlay
+        }
+
+        guard let overlay = markedTextOverlay else { return }
+
+        // Ensure overlay is added and at front
+        if overlay.superview == nil {
+            addSubview(overlay, positioned: .above, relativeTo: nil)
+        }
+
+        overlay.stringValue = markedText
+        overlay.sizeToFit()
+
+        // Add small padding to the overlay
+        var frame = overlay.frame
+        frame.size.width += 4
+        overlay.frame = frame
+
+        // Position overlay above the caret (to avoid IME candidate window below)
+        let caretFrame = caretView.frame
+        let overlayHeight = overlay.frame.height
+
+        // Place above the caret (1px gap)
+        var yPos = caretFrame.maxY + 1
+        if yPos + overlayHeight > bounds.height {
+            // If no room above, place below
+            yPos = caretFrame.origin.y - overlayHeight - 1
+        }
+
+        overlay.frame.origin = CGPoint(
+            x: caretFrame.origin.x,
+            y: yPos
+        )
+        overlay.isHidden = false
+        overlay.needsDisplay = true
+    }
+
+    private func hideMarkedTextOverlay() {
+        markedTextOverlay?.isHidden = true
+        markedTextOverlay?.removeFromSuperview()
+        markedTextOverlay = nil
+    }
+
     func resetInputBuffer() {
+        hideMarkedTextOverlay()
         textInputStorage = ""
-        previousMarkedTextLength = 0
         _markedTextRange = nil
         _selectedTextRange = NSRange(location: 0, length: 0)
     }
